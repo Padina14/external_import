@@ -71,3 +71,130 @@ This is why there is no configuration property for "requiring" a field.
 Such a need is better addressed by creating a :ref:`custom step <developer-steps>`,
 that can applied specific criteria and at a precise point in the
 import process.
+
+.. _category-troubleshooting-more_resourcces:
+
+How can I update categories from two or more resources?
+""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
+Categories are often used as a reservoir for different aspects. It may
+happen that you want update your categories imported from two or more different sources.
+Or you want to update your datat and save your manually integrated categories.
+The TYPO3 DataHandler used by external_import will delete all old
+relations of categories, before it build the relations oto the newly imported categories.
+The 'delete'-option of the 'external'-configuration won't help you.
+
+The solution is a hook that records the old relations to the categories
+directly before the update and creates a complete list of old and new
+relations for the data handler. You find below an example for the hook-class.
+Don't forget the registration of the hook in ``ext_localconf.php``. 
+
+.. code-block:: php
+
+ // hook registered in ext_localconf.php
+     $GLOBALS['TYPO3_CONF_VARS']['EXTCONF']['external_import']['updatePreProcess'][] =
+          \MyVendor\MyExtension\Hooks\SaveRelationsBeforeUpdateHook::class;
+
+.. code-block:: php
+
+
+    /**
+     *
+     * Class SaveRelationsBeforeUpdateHook
+     * 
+     * use Cobweb\ExternalImport\Importer;
+     * use MyVendor\MyExtension\Constants\ImportData;
+     * use PDO;
+     * use TYPO3\CMS\Core\Database\ConnectionPool;
+     * use TYPO3\CMS\Core\Database\Query\QueryBuilder;
+     * use TYPO3\CMS\Core\Utility\GeneralUtility;
+     * 
+     */
+    class SaveRelationsBeforeUpdateHook
+    {
+        /**
+         * The hook will called with each external_import
+         */
+        protected const TEXT_LIST = [
+            ImportoldData::IMPORT_PROCESS_NEWS_REL, // list with string of allowed-import-indexes
+            ImportoldData::IMPORT_PROCESS_NEWS_MAIN,
+        ];
+
+        /**
+         * @param $theRecord
+         * @param Importer $importer
+         * @return mixed
+         */
+        public function processBeforeUpdate($theRecord, $importer)
+        {
+            $index = $importer->getExternalConfiguration() !== null ? $importer->getExternalConfiguration()->getIndex() : 0;
+            if ((in_array($index, self::TEXT_LIST)) &&
+                (!empty($theRecord['tx_import_import_reference_id']))
+            ) {
+
+                $additionalList = $this->findAllForeignRelationsInMMForNews($theRecord['tx_import_import_reference_id']);
+                if (!empty($additionalList)) {
+                    $additional = array_column($additionalList, 'refId');
+                    if (!empty($theRecord['categories'])) {
+                        $list = array_filter(
+                            array_map(
+                                'intval',
+                                explode(',', $theRecord['categories'])
+                            )
+                        );
+                    } else {
+                        $list = [];
+                    }
+                    $theRecord['categories'] = implode(
+                        ',',
+                        array_filter(
+                            array_unique(
+                                array_merge($additional, $list)
+                            )
+                        )
+                    );
+                }
+            }
+            return $theRecord;
+        }
+
+        /**
+          *  Find the old relations to categoeries
+          */
+        protected function findAllForeignRelationsInMMForNews($referencUidValue)
+        {
+            $mmTable = 'sys_category_record_mm';
+            $table = 'tx_news_domain_model_news'; // your destination-table for the import may be something else 
+            $tableOppositeField = 'categories';
+            $refUid = 'uid_foreign';
+            $referencUid = 'tx_import_import_reference_id'; 
+            /** @var QueryBuilder $queryBuilder */
+            $queryBuilder = GeneralUtility::makeInstance(ConnectionPool::class)->getQueryBuilderForTable($table);
+            $queryBuilder
+                ->select('mm.uid_local as refId')
+                ->from($table, 'main')
+                ->join(
+                    'main',
+                    $mmTable,
+                    'mm',
+                    $queryBuilder->expr()->eq(
+                        'mm.' . $refUid,
+                        '`main`.`uid`'
+                    )
+                )
+                ->where(
+                    $queryBuilder->expr()->eq(
+                        'main.' . $referencUid,
+                        $queryBuilder->createNamedParameter($referencUidValue, PDO::PARAM_STR)),
+                    $queryBuilder->expr()->eq(
+                        'mm.tablenames',
+                        $queryBuilder->createNamedParameter($table, PDO::PARAM_STR)),
+                    $queryBuilder->expr()->eq(
+                        'mm.fieldname',
+                        $queryBuilder->createNamedParameter($tableOppositeField, PDO::PARAM_STR))
+                );
+            return $queryBuilder->execute()->fetchAllAssociative();
+        }
+    }
+ 
+ 
+
